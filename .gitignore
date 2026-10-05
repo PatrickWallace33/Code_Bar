@@ -1,0 +1,28 @@
+# Swift Package Manager & Compilação
+.build/
+build/
+DerivedData/
+*.app
+.swiftpm/
+
+# Xcode & Ferramentas
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+
+# Metadados do macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Arquivos de ambiente locais e chaves (preventivo)
+.env
+.env.*
+*.local
+*.pem
+*.key
+*.p8
+*.p12
