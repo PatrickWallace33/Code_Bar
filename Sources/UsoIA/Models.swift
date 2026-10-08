@@ -23,6 +23,20 @@ struct ResetCreditItem: Decodable {
     let id: String?
     let title: String?
     let status: String?
+    let expiresAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, status
+        case expiresAt = "expires_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try? c.decodeIfPresent(String.self, forKey: .id)
+        title = try? c.decodeIfPresent(String.self, forKey: .title)
+        status = try? c.decodeIfPresent(String.self, forKey: .status)
+        expiresAt = try? c.decodeIfPresent(Date.self, forKey: .expiresAt)
+    }
 }
 
 struct ResetCreditsInfo: Decodable {
@@ -115,6 +129,7 @@ struct ProviderUsage: Identifiable {
     let plan: String?
     let accountEmail: String?
     let resetCreditsCount: Int?
+    let resetCreditsExpireAt: Date?
     let windows: [UsageWindow]
     let errorMessage: String?
     let updatedAt: Date?
@@ -137,19 +152,16 @@ struct ProviderUsage: Identifiable {
 
     /// Janela de longo prazo / semanal (ex.: semana atual, todos os modelos).
     var weeklyWindow: UsageWindow? {
-        guard windows.count > 1 else { return nil }
-        let session = sessionWindow
         let candidates = windows.filter {
-            ($0.id == "secondary" ||
+            $0.id == "secondary" ||
              $0.label.lowercased().contains("semanal") ||
              $0.label.lowercased().contains("week") ||
-             $0.label.lowercased().contains("todos os modelos")) &&
-            $0.id != session?.id
+             $0.label.lowercased().contains("todos os modelos")
         }
         if !candidates.isEmpty {
             return candidates.max(by: { $0.usedPercent < $1.usedPercent })
         }
-        return windows.first(where: { $0.id != session?.id })
+        return nil
     }
 
     /// Janela principal retrocompatível.
@@ -187,12 +199,13 @@ struct ProviderUsage: Identifiable {
         return "\(name) — " + parts.joined(separator: " · ")
     }
 
-    init(id: String, name: String, plan: String? = nil, accountEmail: String? = nil, resetCreditsCount: Int? = nil, windows: [UsageWindow] = [], errorMessage: String? = nil, updatedAt: Date? = nil) {
+    init(id: String, name: String, plan: String? = nil, accountEmail: String? = nil, resetCreditsCount: Int? = nil, resetCreditsExpireAt: Date? = nil, windows: [UsageWindow] = [], errorMessage: String? = nil, updatedAt: Date? = nil) {
         self.id = id
         self.name = name
         self.plan = plan
         self.accountEmail = accountEmail
         self.resetCreditsCount = resetCreditsCount
+        self.resetCreditsExpireAt = resetCreditsExpireAt
         self.windows = windows
         self.errorMessage = errorMessage
         self.updatedAt = updatedAt
@@ -205,6 +218,9 @@ struct ProviderUsage: Identifiable {
         plan = rawPlan.flatMap(Names.plan)
         accountEmail = p.usage?.accountEmail ?? p.usage?.identity?.accountEmail
         resetCreditsCount = p.usage?.codexResetCredits?.availableCount
+        resetCreditsExpireAt = p.usage?.codexResetCredits?.credits?
+            .filter { ["available", "unused"].contains($0.status?.lowercased() ?? "") }
+            .compactMap(\.expiresAt).min()
         updatedAt = p.usage?.updatedAt
 
         var list: [UsageWindow] = []
@@ -282,7 +298,6 @@ enum Names {
     static func plan(_ raw: String) -> String? {
         let t = raw.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return nil }
-        if t.lowercased() == "prolite" { return "Pro 5x" }
         return t.prefix(1).uppercased() + t.dropFirst()
     }
 
@@ -291,6 +306,7 @@ enum Names {
     }
 
     static func label(_ raw: String, provider: String, slot: String) -> String {
+        if raw.lowercased() == "weekly" { return "Limite semanal" }
         if provider == "claude", slot == "secondary", raw.lowercased().contains("week") {
             return "Todos os modelos"
         }

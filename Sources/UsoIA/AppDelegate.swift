@@ -7,38 +7,40 @@ import SwiftUI
 final class BarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
-}
-
-/// Arrastar em qualquer ponto da barra move a janela (o clique esquerdo não é usado para mais nada).
-final class BarHostingView: NSHostingView<BarView> {
     var onDragStart: (() -> Void)?
     var onDragEnd: (() -> Void)?
-    private var startMouse: NSPoint = .zero
-    private var startOrigin: NSPoint = .zero
+    var onClick: (() -> Void)?
 
+    /// Captura o gesto antes dos subviews SwiftUI, inclusive quando começa sobre um logo.
+    override func sendEvent(_ event: NSEvent) {
+        guard event.type == .leftMouseDown else {
+            super.sendEvent(event)
+            return
+        }
+        let startMouse = convertPoint(toScreen: event.locationInWindow)
+        let startOrigin = frame.origin
+        var didDrag = false
+        while let next = nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if next.type == .leftMouseUp { break }
+            let mouse = NSEvent.mouseLocation
+            let delta = NSPoint(x: mouse.x - startMouse.x, y: mouse.y - startMouse.y)
+            if !didDrag {
+                guard hypot(delta.x, delta.y) > 4 else { continue }
+                didDrag = true
+                onDragStart?()
+            }
+            setFrameOrigin(NSPoint(x: startOrigin.x + delta.x, y: startOrigin.y + delta.y))
+        }
+        if didDrag { onDragEnd?() } else { onClick?() }
+    }
+}
+
+final class BarHostingView: NSHostingView<BarView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func mouseDown(with event: NSEvent) {
-        startMouse = NSEvent.mouseLocation
-        startOrigin = window?.frame.origin ?? .zero
-        onDragStart?()
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let window else { return }
-        let mouse = NSEvent.mouseLocation
-        window.setFrameOrigin(NSPoint(
-            x: startOrigin.x + mouse.x - startMouse.x,
-            y: startOrigin.y + mouse.y - startMouse.y))
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        onDragEnd?()
-    }
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let store = UsageStore()
     private let state = BarState()
     private var panel: BarPanel!
@@ -50,30 +52,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let orcaBundleID = "com.stablyai.orca"
     private let snapDistance: CGFloat = 24
     private var lastOrcaFrame: NSRect?
+    private var placement = BarPlacement.load()
+    private var isPositioningPanel = false
+    private var pendingMove: DispatchWorkItem?
 
     private enum Keys {
-        static let top = "barTop"
-        static let x = "barX"
-        static let relativeTop = "barRelativeTop"
-        static let relativeX = "barRelativeX"
         static let loginItemSetup = "loginItemSetup"
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let placement { state.docked = placement.docked }
         hosting = BarHostingView(rootView: BarView(store: store, state: state))
         hosting.sizingOptions = [.intrinsicContentSize]
-        hosting.onDragStart = { [weak self] in
-            self?.state.isDragging = true
-            self?.state.closeNow()
-        }
-        hosting.onDragEnd = { [weak self] in self?.finishDrag() }
-
         panel = BarPanel(
             contentRect: NSRect(origin: .zero, size: hosting.fittingSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false)
+        panel.onDragStart = { [weak self] in
+            self?.state.isDragging = true
+            self?.state.closeNow()
+        }
+        panel.onDragEnd = { [weak self] in self?.finishDrag() }
+        panel.onClick = { [weak self] in
+            guard let self, let id = self.state.hoveredID else { return }
+            self.state.togglePanel(id)
+        }
         panel.contentView = hosting
+        panel.delegate = self
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -147,6 +153,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        pendingMove?.cancel()
+        if state.isDragging { finishDrag() }
+    }
+
+    /// O AppKit pode arrastar a janela sem chamar mouseUp no NSHostingView.
+    func windowDidMove(_ notification: Notification) {
+        guard !isPositioningPanel, let moved = notification.object as? NSWindow,
+              moved === panel else { return }
+        if !state.isDragging {
+            state.isDragging = true
+            state.closeNow()
+        }
+        recordPlacement()
+        scheduleMoveCompletion()
+    }
+
+    private func scheduleMoveCompletion() {
+        pendingMove?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if NSEvent.pressedMouseButtons & 1 != 0 {
+                self.scheduleMoveCompletion()
+            } else {
+                self.finishDrag()
+            }
+        }
+        pendingMove = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
     private var isOrcaRunning: Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == orcaBundleID }
     }
@@ -211,7 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let show = shouldShow
         store.isPaused = !show
         if show {
-            let orca = currentOrcaWindowFrame()
+            let orca = state.onlyWithOrca ? currentOrcaWindowFrame() : nil
             if orca != lastOrcaFrame {
                 lastOrcaFrame = orca
                 layoutPanel(orcaFrame: orca)
@@ -230,92 +267,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func finishDrag() {
-        state.isDragging = false
-        var frame = panel.frame
-        let orca = currentOrcaWindowFrame()
-
-        guard let screen = orca.flatMap({ targetRect in
-            NSScreen.screens.first { $0.frame.intersects(targetRect) }
-        }) ?? panel.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
-
-        let visible = screen.visibleFrame
-        let targetBounds = orca ?? visible
-
-        // Checa se está próximo da borda direita da janela do Orca (ou da tela)
-        let distanceToRight = abs(targetBounds.maxX - frame.maxX)
-        let docked = distanceToRight < snapDistance
-
-        if docked {
-            frame.origin.x = targetBounds.maxX - frame.width
+    private func screen(containing frame: NSRect) -> NSScreen? {
+        NSScreen.screens.filter { $0.frame.intersects(frame) }.max {
+            let a = $0.frame.intersection(frame)
+            let b = $1.frame.intersection(frame)
+            return a.width * a.height < b.width * b.height
         }
-        panel.setFrameOrigin(frame.origin)
-
-        let defaults = UserDefaults.standard
-        defaults.set(Double(frame.maxY), forKey: Keys.top)
-        defaults.set(Double(frame.minX), forKey: Keys.x)
-        defaults.set(docked, forKey: BarState.Keys.docked)
-        state.docked = docked
-
-        if let orca {
-            // Salva a posição relativa à janela do Orca para acompanhá-lo
-            defaults.set(Double(orca.maxY - frame.maxY), forKey: Keys.relativeTop)
-            defaults.set(Double(frame.minX - orca.minX), forKey: Keys.relativeX)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.layoutPanel() }
     }
 
-    /// Tamanho do conteúdo; posiciona alinhado à janela do Orca (ou à tela), sempre acompanhando divisões de tela.
+    private func recordPlacement() {
+        guard let screen = screen(containing: panel.frame) ?? panel.screen ?? NSScreen.main else { return }
+        let orca = (state.onlyWithOrca ? currentOrcaWindowFrame() : nil)
+            .flatMap { $0.intersects(panel.frame) ? $0 : nil }
+        let targetBounds = orca ?? screen.visibleFrame
+        let docked = abs(targetBounds.maxX - panel.frame.maxX) < snapDistance
+        let saved = BarPlacement(
+            frame: panel.frame, docked: docked, orcaFrame: orca,
+            screenID: (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value)
+        placement = saved
+        saved.save()
+    }
+
+    private func finishDrag() {
+        pendingMove?.cancel()
+        pendingMove = nil
+        guard let screen = screen(containing: panel.frame) ?? panel.screen ?? NSScreen.main else {
+            state.isDragging = false
+            return
+        }
+        let orca = (state.onlyWithOrca ? currentOrcaWindowFrame() : nil)
+            .flatMap { $0.intersects(panel.frame) ? $0 : nil }
+        let targetBounds = orca ?? screen.visibleFrame
+        let docked = abs(targetBounds.maxX - panel.frame.maxX) < snapDistance
+        let saved = BarPlacement(frame: panel.frame, docked: docked, orcaFrame: orca, screenID: nil)
+        let frame = saved.restoredFrame(size: panel.frame.size, visibleFrame: screen.visibleFrame, orcaFrame: orca)
+        isPositioningPanel = true
+        panel.setFrame(frame, display: true)
+        isPositioningPanel = false
+        recordPlacement()
+        state.docked = placement?.docked ?? docked
+        state.isDragging = false
+    }
+
+    /// Restaura a última posição; o local padrão só é usado antes do primeiro arraste.
     private func layoutPanel(orcaFrame: NSRect? = nil) {
         guard !state.isDragging else { return }
-        let orca = orcaFrame ?? currentOrcaWindowFrame()
-
-        guard let screen = orca.flatMap({ targetRect in
-            NSScreen.screens.first { $0.frame.intersects(targetRect) }
-        }) ?? panel.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
-
-        let visible = screen.visibleFrame
+        let orca = state.onlyWithOrca ? (orcaFrame ?? currentOrcaWindowFrame()) : nil
         let size = hosting.fittingSize
         guard size.width > 0, size.height > 0 else { return }
 
-        let defaults = UserDefaults.standard
-        let targetBounds = orca ?? visible
-
-        var x: CGFloat
-        if state.docked {
-            // Fixado na borda direita da janela do Orca
-            x = targetBounds.maxX - size.width
-        } else {
-            if let savedRelX = defaults.object(forKey: Keys.relativeX) as? Double, orca != nil {
-                x = targetBounds.minX + CGFloat(savedRelX)
-            } else if let savedX = defaults.object(forKey: Keys.x) as? Double {
-                x = CGFloat(savedX)
-            } else {
-                x = targetBounds.maxX - size.width
+        let followsOrca = placement == nil || placement?.relativeX != nil || placement?.relativeTop != nil
+        let anchor = followsOrca ? orca : nil
+        let savedScreen = placement?.screenID.flatMap { id in
+            NSScreen.screens.first {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
             }
         }
-        // Garante que não saia dos limites horizontais da tela
-        x = min(max(x, visible.minX), visible.maxX - size.width)
+        let savedFrame = placement.map { NSRect(x: $0.x, y: $0.top - size.height, width: size.width, height: size.height) }
+        guard let screen = anchor.flatMap({ self.screen(containing: $0) })
+                ?? savedScreen ?? savedFrame.flatMap({ self.screen(containing: $0) })
+                ?? panel.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
 
-        var top: CGFloat
-        if let savedRelTop = defaults.object(forKey: Keys.relativeTop) as? Double, orca != nil {
-            top = targetBounds.maxY - CGFloat(savedRelTop)
-        } else if let savedTop = defaults.object(forKey: Keys.top) as? Double {
-            top = CGFloat(savedTop)
-        } else {
-            top = targetBounds.midY + size.height / 2
-        }
-
-        // Restringe a posição vertical dentro dos limites do Orca (quando visível) e da tela
-        let minY = max(visible.minY + size.height, targetBounds.minY + size.height)
-        let maxY = min(visible.maxY, targetBounds.maxY)
-        if maxY >= minY {
-            top = min(max(top, minY), maxY)
-        } else {
-            top = min(max(top, visible.minY + size.height), visible.maxY)
-        }
-
-        panel.setFrame(NSRect(x: x, y: top - size.height, width: size.width, height: size.height), display: true)
+        let bounds = anchor ?? screen.visibleFrame
+        let initial = BarPlacement(
+            frame: NSRect(x: bounds.maxX - size.width, y: bounds.midY - size.height / 2,
+                          width: size.width, height: size.height),
+            docked: state.docked, orcaFrame: anchor, screenID: nil)
+        let frame = (placement ?? initial).restoredFrame(
+            size: size, visibleFrame: screen.visibleFrame, orcaFrame: anchor)
+        isPositioningPanel = true
+        panel.setFrame(frame, display: true)
+        isPositioningPanel = false
     }
 }

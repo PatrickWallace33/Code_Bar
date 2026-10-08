@@ -17,12 +17,16 @@ enum UsageFetcher {
     }
 
     static func fetchRaw(timeout: TimeInterval = 90) async throws -> Data {
+        try await run(arguments: ["usage", "--json", "--no-credits"], timeout: timeout)
+    }
+
+    static func run(arguments: [String], timeout: TimeInterval = 90) async throws -> Data {
         guard FileManager.default.isExecutableFile(atPath: cliPath) else { throw FetchError.cliMissing }
         return try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .utility).async {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: cliPath)
-                p.arguments = ["usage", "--json", "--no-credits"]
+                p.arguments = arguments
 
                 // Apps abertos pelo Finder herdam um PATH mínimo; o CLI pode precisar de claude/codex/agy.
                 var env = ProcessInfo.processInfo.environment

@@ -7,6 +7,9 @@ final class UsageStore: ObservableObject {
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var isLoading = false
     @Published private(set) var lastError: String?
+    @Published private(set) var activity: [String: TokenActivity] = [:]
+    private var activityTask: Task<Void, Never>?
+    private var didLoadLocalData = false
     /// Barra escondida (Orca fechado): não busca nada até aparecer de novo.
     var isPaused = false
 
@@ -15,6 +18,7 @@ final class UsageStore: ObservableObject {
     private let cacheDateKey = "lastUpdated"
 
     init() {
+        providers = Self.ordered([])
         // Mostra o último resultado na hora, enquanto a primeira busca (≈15 s) roda.
         let defaults = UserDefaults.standard
         if let data = defaults.data(forKey: cacheKey), let list = try? UsageFetcher.decode(data) {
@@ -36,7 +40,7 @@ final class UsageStore: ObservableObject {
     }
 
     func refreshIfStale(maxAge: TimeInterval = 120) {
-        if let last = lastUpdated, Date().timeIntervalSince(last) < maxAge { return }
+        if didLoadLocalData, let last = lastUpdated, Date().timeIntervalSince(last) < maxAge { return }
         refresh()
     }
 
@@ -61,6 +65,8 @@ final class UsageStore: ObservableObject {
     func refresh() {
         guard !isLoading else { return }
         isLoading = true
+        didLoadLocalData = true
+        refreshActivity()
         Task {
             // Projetos vêm de arquivos locais (rápido): mostra antes de esperar o CodexBar.
             recent = await Task.detached(priority: .utility) { RecentProjects.loadAll() }.value
@@ -78,6 +84,22 @@ final class UsageStore: ObservableObject {
                 lastError = error.localizedDescription
             }
             isLoading = false
+        }
+    }
+
+    private func refreshActivity() {
+        guard activityTask == nil else { return }
+        activityTask = Task {
+            await withTaskGroup(of: (String, TokenActivity?).self) { group in
+                for id in ["claude", "codex", "antigravity"] {
+                    group.addTask { (id, try? await TokenActivity.fetch(provider: id)) }
+                }
+                for await (id, report) in group {
+                    // Uma falha remove o gráfico anterior para não apresentá-lo como atualizado.
+                    activity[id] = report
+                }
+            }
+            activityTask = nil
         }
     }
 

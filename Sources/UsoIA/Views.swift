@@ -2,80 +2,47 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-// MARK: - Cores Oficiais e Sutis de Cada IA
-
-enum ProviderColors {
-    static func color(for id: String) -> Color {
-        switch id.lowercased() {
-        case "claude":
-            // Azul céu elegante (#3B82F6), exatamente como o anel do Claude no vídeo de referência
-            return Color(red: 0.23, green: 0.51, blue: 0.96)
-        case "codex", "openai":
-            // Verde esmeralda suave da OpenAI (#10A37F)
-            return Color(red: 0.08, green: 0.66, blue: 0.50)
-        case "antigravity":
-            // Índigo suave do Google Antigravity (#6366F1), sutil e sem arco-íris
-            return Color(red: 0.40, green: 0.40, blue: 0.95)
-        default:
-            return Color(red: 0.40, green: 0.40, blue: 0.95)
-        }
-    }
-
-    /// Retorna a cor correspondente para janelas específicas de modelos
-    static func windowColor(label: String, fallback: Color) -> Color {
-        let l = label.lowercased()
-        if l.contains("claude") {
-            return color(for: "claude")
-        } else if l.contains("gpt") || l.contains("codex") || l.contains("openai") {
-            return color(for: "codex")
-        } else if l.contains("antigravity") {
-            return color(for: "antigravity")
-        }
-        return fallback
-    }
-}
-
-extension ProviderUsage {
-    var brandColor: Color {
-        ProviderColors.color(for: id)
-    }
-}
-
-// MARK: - Tema e Estilos
+// MARK: - Aparência da referência
 
 enum Theme {
-    static let track = Color(white: 0.22)
-    static let barFill = Color(white: 0.12).opacity(0.92)
-    static let panelFill = Color(white: 0.14)
-    static let cornerRadius: CGFloat = 18
+    static let accent = Color(red: 0.97, green: 0.85, blue: 0.22)
+    static let track = Color.white.opacity(0.20)
+    static let barFill = Color.black.opacity(0.20)
+    static let panelFill = Color(white: 0.16).opacity(0.72)
+    static let barWidth: CGFloat = 54
 
-    /// Determina a cor visual baseada no consumo:
-    /// - Normal (<75%): cor oficial sutil da IA
-    /// - Alerta moderado (75-89%): âmbar suave
-    /// - Crítico (>=90%): vermelho alerta suave (idêntico ao 92% da imagem de referência)
-    static func usageColor(_ percent: Double, brand: Color? = nil) -> Color {
-        let official = brand ?? Color(red: 0.23, green: 0.51, blue: 0.96)
+    static func usageColor(_ percent: Double) -> Color {
         switch percent {
-        case ..<75:
-            return official
-        case ..<90:
-            return Color(red: 0.98, green: 0.73, blue: 0.20)
-        default:
-            return Color(red: 0.95, green: 0.32, blue: 0.30)
+        case ..<75: return accent
+        case ..<90: return Color(red: 1.0, green: 0.67, blue: 0.24)
+        default: return Color(red: 1.0, green: 0.36, blue: 0.33)
         }
-    }
-
-    static func color(_ percent: Double) -> Color {
-        usageColor(percent, brand: nil)
     }
 }
 
-/// Colada na borda: cantos arredondados só do lado esquerdo. Solta na tela: todos arredondados.
-private func barShape(docked: Bool) -> UnevenRoundedRectangle {
-    let r = Theme.cornerRadius
-    return UnevenRoundedRectangle(
-        topLeadingRadius: r, bottomLeadingRadius: r,
-        bottomTrailingRadius: docked ? 0 : r, topTrailingRadius: docked ? 0 : r)
+/// A aba se une à borda com uma curva em S, em vez de um canto de retângulo.
+private struct SidebarShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let cap = min(rect.width * 1.55, rect.height / 2)
+        let middle = rect.minX + rect.width * 0.60
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addCurve(to: CGPoint(x: middle, y: rect.minY + cap * 0.54),
+                      control1: CGPoint(x: rect.maxX, y: rect.minY + cap * 0.48),
+                      control2: CGPoint(x: rect.minX + rect.width * 0.90, y: rect.minY + cap * 0.54))
+        path.addCurve(to: CGPoint(x: rect.minX, y: rect.minY + cap),
+                      control1: CGPoint(x: rect.minX + rect.width * 0.16, y: rect.minY + cap * 0.54),
+                      control2: CGPoint(x: rect.minX, y: rect.minY + cap * 0.72))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - cap))
+        path.addCurve(to: CGPoint(x: middle, y: rect.maxY - cap * 0.54),
+                      control1: CGPoint(x: rect.minX, y: rect.maxY - cap * 0.72),
+                      control2: CGPoint(x: rect.minX + rect.width * 0.16, y: rect.maxY - cap * 0.54))
+        path.addCurve(to: CGPoint(x: rect.maxX, y: rect.maxY),
+                      control1: CGPoint(x: rect.minX + rect.width * 0.90, y: rect.maxY - cap * 0.54),
+                      control2: CGPoint(x: rect.maxX, y: rect.maxY - cap * 0.48))
+        path.closeSubpath()
+        return path
+    }
 }
 
 // MARK: - Barra vertical
@@ -85,33 +52,27 @@ struct BarView: View {
     @ObservedObject var state: BarState
 
     var body: some View {
+        let active = state.isPointerInsideBar || state.openID != nil || state.isDragging
         VStack(spacing: 12) {
-            if store.providers.isEmpty {
-                if let error = store.lastError {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Color(red: 1.0, green: 0.35, blue: 0.32))
-                        .help(error)
-                } else {
-                    ProgressView().controlSize(.small)
-                }
-            }
-
             ForEach(store.providers) { provider in
                 RingItem(provider: provider, store: store, state: state)
             }
         }
-        .padding(.top, 14)
-        .padding(.bottom, 12)
-        .frame(width: 50)
-        .background(
-            barShape(docked: state.docked)
-                .fill(Theme.barFill)
-                .shadow(color: Color.black.opacity(0.28), radius: 6, x: -2, y: 1)
-        )
+        .padding(.top, 48)
+        .padding(.bottom, 60)
+        .frame(width: Theme.barWidth)
+        .background {
+            ZStack {
+                SidebarShape().fill(.ultraThinMaterial).opacity(active ? 1 : 0.55)
+                SidebarShape().fill(Theme.barFill).opacity(active ? 1 : 0.75)
+            }
+        }
         .overlay(
-            barShape(docked: state.docked)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            SidebarShape()
+                .stroke(Color.white.opacity(active ? 0.08 : 0.04), lineWidth: 0.5)
         )
+        .animation(.easeInOut(duration: 0.18), value: active)
+        .onHover { state.isPointerInsideBar = $0 }
         .contextMenu { BarMenuItems(store: store, state: state) }
         .environment(\.colorScheme, .dark)
     }
@@ -122,69 +83,59 @@ struct RingItem: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var state: BarState
 
+    private var displayedWindow: UsageWindow? {
+        state.showsWeeklyUsage ? (provider.weeklyWindow ?? provider.main) : provider.main
+    }
+
     var body: some View {
-        let pct = provider.main?.usedPercent
+        let pct = displayedWindow?.usedPercent
         let isOpen = state.openID == provider.id
-        let brandColor = provider.brandColor
-        let ringColor = pct.map { Theme.usageColor($0, brand: brandColor) } ?? brandColor
 
-        VStack(spacing: 4) {
+        VStack(spacing: 6) {
             ZStack {
-                // 1. Círculo de fundo escuro sutil
                 Circle()
-                    .fill(Color(white: isOpen ? 0.22 : 0.16))
-                    .frame(width: 36, height: 36)
-
-                // 2. Trilho do anel
+                    .fill(Color.white.opacity(isOpen ? 0.065 : 0.015))
                 Circle()
-                    .stroke(Theme.track, lineWidth: 2.2)
-                    .frame(width: 36, height: 36)
+                    .strokeBorder(Theme.track, lineWidth: 3.5)
 
-                // 3. Arco de progresso sutil (sem reflexos ou sombras pesadas)
-                if let pct {
+                if let pct, pct > 0 {
                     Circle()
-                        .trim(from: 0, to: min(max(pct / 100, 0.001), 1))
-                        .stroke(
-                            ringColor,
-                            style: StrokeStyle(lineWidth: 2.4, lineCap: .round)
-                        )
+                        .inset(by: 1.75)
+                        .trim(from: 0, to: min(max(pct / 100, 0), 1))
+                        .stroke(Theme.usageColor(pct), style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
                         .rotationEffect(.degrees(-90))
-                        .frame(width: 36, height: 36)
                 }
 
-                // 4. Logo oficial nítido e monocromático branco
-                ProviderIcon(id: provider.id, size: 16, color: .white.opacity(pct == nil ? 0.45 : 0.95))
+                ProviderIcon(id: provider.id, size: 18, color: .white.opacity(pct == nil ? 0.40 : 0.96))
             }
-            .frame(width: 38, height: 38)
+            .frame(width: 40, height: 40)
 
-            // Porcentagem limpa abaixo do anel
-            if let pct {
-                Text(Fmt.pct(pct))
-                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.white.opacity(0.95))
-            } else {
-                Text("—")
-                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.white.opacity(0.35))
-            }
+            Text(pct.map(Fmt.pct) ?? "—")
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.white.opacity(pct == nil ? 0.40 : 0.98))
         }
-        .frame(width: 48)
-        .padding(.vertical, 2)
+        .frame(width: Theme.barWidth - 8)
+        .padding(.vertical, 3)
         .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isOpen ? Color.white.opacity(0.08) : Color.clear)
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.white.opacity(isOpen ? 0.035 : 0))
         )
         .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(provider.name), \(displayedWindow?.label ?? "uso"), \(pct.map(Fmt.pct) ?? "sem dados")")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { state.togglePanel(provider.id) }
         .onHover { state.hoverItem(provider.id, inside: $0) }
         .popover(
             isPresented: Binding(
                 get: { state.openID == provider.id },
-                set: { shown in if !shown, state.openID == provider.id { state.openID = nil } }),
+                set: { shown in if !shown, state.openID == provider.id { state.closeNow() } }),
             arrowEdge: .leading
         ) {
-            DetailView(provider: provider, store: store)
+            DetailView(provider: provider, store: store, preferredWindowID: displayedWindow?.id)
                 .onHover { state.hoverPanel(inside: $0) }
+                .environment(\.colorScheme, .dark)
         }
     }
 }
@@ -255,9 +206,12 @@ struct BarMenuItems: View {
             Text("Atualizado \(Fmt.ago(updated, now: Date()))")
         }
         Divider()
+        Toggle("Mostrar consumo semanal", isOn: $state.showsWeeklyUsage)
+        Divider()
         Toggle("Mostrar só com o Orca aberto", isOn: $state.onlyWithOrca)
         Toggle("Ocultar ao sair do Orca", isOn: $state.onlyWhenActive)
-        Toggle("Alertas de limite (80% e 90%)", isOn: $state.notifyOnLimits)
+            .disabled(!state.onlyWithOrca)
+        Toggle("Alertas de limite (80%, 90% e 95%)", isOn: $state.notifyOnLimits)
         Toggle("Abrir ao iniciar o Mac", isOn: Binding(
             get: { SMAppService.mainApp.status == .enabled },
             set: { enable in
@@ -272,185 +226,228 @@ struct BarMenuItems: View {
     }
 }
 
-// MARK: - Painel "Uso do …"
+// MARK: - Painel de uso
 
 struct DetailView: View {
     let provider: ProviderUsage
     @ObservedObject var store: UsageStore
+    var preferredWindowID: String?
+
+    private var windows: [UsageWindow] {
+        provider.windows.filter { $0.id == preferredWindowID }
+            + provider.windows.filter { $0.id != preferredWindowID }
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             let now = context.date
-            let brandColor = provider.brandColor
 
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .center, spacing: 8) {
-                    ProviderIcon(id: provider.id, size: 16)
-
-                    VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 10) {
+                    ProviderIcon(id: provider.id, size: 24)
+                    VStack(alignment: .leading, spacing: 2) {
                         Text("Uso do \(provider.name)")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 16, weight: .bold))
                             .foregroundStyle(.white)
-
-                        if let email = provider.accountEmail {
-                            Text(email)
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(.white.opacity(0.45))
-                                .lineLimit(1)
+                        if let plan = provider.plan {
+                            Text(plan)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.65))
                         }
                     }
-
-                    Spacer(minLength: 6)
-
-                    if let count = provider.resetCreditsCount, count > 0 {
-                        Text("\(count) reset")
-                            .font(.system(size: 9, weight: .bold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color(red: 0.10, green: 0.70, blue: 0.40).opacity(0.20)))
-                            .foregroundStyle(Color(red: 0.20, green: 0.85, blue: 0.45))
-                    }
-
-                    if let plan = provider.plan {
-                        Text(plan)
-                            .font(.system(size: 9.5, weight: .bold))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2.5)
-                            .background(Capsule().fill(brandColor.opacity(0.20)))
-                            .foregroundStyle(brandColor)
-                            .overlay(Capsule().stroke(brandColor.opacity(0.40), lineWidth: 0.8))
-                    }
+                    Spacer(minLength: 0)
                 }
-                .padding(.bottom, 10)
+                .padding(.bottom, 16)
+                .help(provider.accountEmail ?? provider.name)
 
-                // Alerta se alguma cota estiver esgotada (ex.: semanal atingida)
                 if let alert = provider.depletionMessage {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.octagon.fill")
-                            .font(.system(size: 10.5))
-                        Text(alert)
-                            .font(.system(size: 10.5, weight: .semibold))
-                    }
-                    .foregroundStyle(Color(red: 1.0, green: 0.35, blue: 0.32))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(Color(red: 1.0, green: 0.35, blue: 0.32).opacity(0.14))
-                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color(red: 1.0, green: 0.35, blue: 0.32).opacity(0.35), lineWidth: 0.8))
-                    )
-                    .padding(.bottom, 10)
+                    Label(alert, systemImage: "exclamationmark.circle.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.usageColor(100))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.usageColor(100).opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.bottom, 12)
                 }
 
                 if let error = provider.errorMessage {
-                    Text(error)
-                        .font(.system(size: 10.5))
+                    Text(store.isLoading && provider.windows.isEmpty ? "Consultando uso…" : error)
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                        .padding(.bottom, 10)
                 }
 
-                VStack(alignment: .leading, spacing: 13) {
-                    ForEach(provider.windows) { window in
-                        WindowRow(window: window, brandColor: brandColor, now: now)
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(windows) { window in
+                        WindowRow(window: window, now: now)
                     }
+                }
+
+                if let count = provider.resetCreditsCount, count > 0 {
+                    sectionDivider
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Resets disponíveis")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(count == 1 ? "1 reset não utilizado" : "\(count) resets não utilizados")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.78))
+                        if let expiry = provider.resetCreditsExpireAt {
+                            Text("Expira em \(expiry.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "pt_BR"))))")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if let activity = store.activity[provider.id] {
+                    sectionDivider
+                    TokenActivityView(activity: activity, now: now)
                 }
 
                 let recentProjects = Array((store.recent[provider.id] ?? []).prefix(3))
                 if !recentProjects.isEmpty {
-                    Rectangle()
-                        .fill(Color.white.opacity(0.08))
-                        .frame(height: 1)
-                        .padding(.vertical, 10)
-
-                    HStack(spacing: 5) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(brandColor)
-                        Text("Projetos recentes")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("clique copia ID")
-                            .font(.system(size: 8.5))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.bottom, 6)
-
-                    VStack(alignment: .leading, spacing: 7) {
+                    sectionDivider
+                    Text("Projetos recentes")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.bottom, 7)
+                    VStack(alignment: .leading, spacing: 5) {
                         ForEach(recentProjects) { project in
-                            ProjectRow(project: project, brandColor: brandColor, now: now)
+                            ProjectRow(project: project, brandColor: Theme.accent, now: now)
                         }
                     }
                 }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
-            .frame(width: 280)
-            .background(
-                ZStack {
-                    Theme.panelFill
-                    VStack {
-                        LinearGradient(
-                            colors: [brandColor.opacity(0.8), brandColor.opacity(0.0)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                        .frame(height: 2)
-                        Spacer()
+
+                sectionDivider
+                HStack(spacing: 6) {
+                    if store.isLoading {
+                        ProgressView().controlSize(.mini)
+                        Text("Atualizando…")
+                    } else if store.lastError != nil {
+                        Image(systemName: "exclamationmark.circle")
+                            .foregroundStyle(Theme.accent)
+                        Text(provider.windows.isEmpty ? "Falha ao consultar" : "Dados da última consulta")
+                    } else if let updated = store.lastUpdated {
+                        Circle().fill(Theme.accent).frame(width: 4, height: 4)
+                        Text("Atualizado \(Fmt.ago(updated, now: now))")
+                    } else {
+                        Text("Aguardando atualização")
                     }
+                    Spacer(minLength: 4)
+                    Button { store.refresh() } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .medium))
+                            .frame(width: 22, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.isLoading)
+                    .help("Atualizar uso")
+                    .accessibilityLabel("Atualizar uso")
                 }
-            )
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.50))
+                .help(store.lastError ?? "Atualização automática a cada 5 minutos")
+            }
+            .padding(14)
+            .frame(width: 300)
+            .background(Theme.panelFill.gradient)
         }
+    }
+
+    private var sectionDivider: some View {
+        Rectangle().fill(Color.white.opacity(0.14))
+            .frame(height: 1)
+            .padding(.vertical, 12)
     }
 }
 
 struct WindowRow: View {
     let window: UsageWindow
-    let brandColor: Color
     let now: Date
 
     var body: some View {
-        let winColor = ProviderColors.windowColor(label: window.label, fallback: brandColor)
-        let usageColor = Theme.usageColor(window.usedPercent, brand: winColor)
-
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(window.label)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(.white)
-                Spacer(minLength: 8)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.90))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
                 if let reset = Fmt.reset(window, now: now) {
                     Text(reset)
-                        .font(.system(size: 10, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.55))
-                        .lineLimit(1)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .fixedSize()
                 }
             }
-            ProgressBar(value: window.usedPercent, color: usageColor)
-
-            HStack {
-                Text("\(Fmt.pct(window.usedPercent)) usado")
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(usageColor)
-                Text("·")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.white.opacity(0.3))
-                Text("\(Fmt.pct(100 - window.usedPercent)) restante")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.white.opacity(0.55))
-            }
+            ProgressBar(value: window.usedPercent, color: Theme.usageColor(window.usedPercent))
+            Text("\(Fmt.pct(window.usedPercent)) usado · \(Fmt.pct(100 - window.usedPercent)) restante")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.72))
 
             if let runsOut = window.runsOutAt, runsOut > now {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 9))
-                    Text("No ritmo atual, acaba em \(Fmt.duration(runsOut.timeIntervalSince(now)))")
-                        .font(.system(size: 9.5, weight: .medium))
-                }
-                .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.30))
+                Label("No ritmo atual, acaba em \(Fmt.duration(runsOut.timeIntervalSince(now)))", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.usageColor(85))
             }
         }
+    }
+}
+
+struct TokenActivityView: View {
+    let activity: TokenActivity
+    let now: Date
+
+    var body: some View {
+        let samples = activity.samples(now: now)
+        let total = samples.reduce(0) { $0 + $1.tokens }
+        let peak = samples.map(\.tokens).max() ?? 0
+        let today = samples.last?.tokens ?? 0
+
+        VStack(alignment: .leading, spacing: 7) {
+            metric("Tokens locais · 30 dias", value: total)
+            metric("Pico diário", value: peak)
+            metric("Hoje", value: today)
+
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach(samples) { sample in
+                    Rectangle()
+                        .fill(sample.id == samples.last?.id ? Theme.accent : Color.white.opacity(0.65))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: peak > 0 ? 46 * CGFloat(sample.tokens) / CGFloat(peak) : 0)
+                        .frame(height: 46, alignment: .bottom)
+                        .help("\(sample.date.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "pt_BR")))): \(sample.tokens.formatted()) tokens")
+                }
+            }
+            .padding(.top, 5)
+            .overlay(alignment: .bottom) { Rectangle().fill(Color.white.opacity(0.12)).frame(height: 1) }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Tokens por dia nos últimos 30 dias")
+            .accessibilityValue("Total \(total), pico diário \(peak), hoje \(today)")
+
+            HStack {
+                if let first = samples.first {
+                    Text(first.date.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "pt_BR"))))
+                }
+                Spacer()
+                Text("Hoje")
+            }
+            .font(.system(size: 9))
+            .foregroundStyle(.white.opacity(0.40))
+        }
+    }
+
+    private func metric(_ label: String, value: Int) -> some View {
+        HStack {
+            Text(label).foregroundStyle(.white.opacity(0.65))
+            Spacer()
+            Text(value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)).locale(Locale(identifier: "pt_BR"))))
+                .foregroundStyle(.white.opacity(0.9))
+                .monospacedDigit()
+                .help("\(value.formatted()) tokens")
+        }
+        .font(.system(size: 11, weight: .medium))
     }
 }
 
@@ -612,10 +609,12 @@ struct ProgressBar: View {
                 Capsule().fill(Color.white.opacity(0.12))
                 Capsule()
                     .fill(color)
-                    .frame(width: max(4, geo.size.width * min(max(value, 0), 100) / 100))
+                    .frame(width: geo.size.width * min(max(value, 0), 100) / 100)
             }
         }
-        .frame(height: 4)
+        .frame(height: 5)
+        .accessibilityLabel("Consumo")
+        .accessibilityValue(Fmt.pct(value))
     }
 }
 

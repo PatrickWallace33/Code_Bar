@@ -7,6 +7,10 @@ final class BarState: ObservableObject {
     @Published var openID: String?
     /// Colada na borda direita da tela (cantos arredondados só do lado esquerdo).
     @Published var docked: Bool
+    /// A foto de referência destaca o limite semanal abaixo de cada anel.
+    @Published var showsWeeklyUsage: Bool {
+        didSet { UserDefaults.standard.set(showsWeeklyUsage, forKey: Keys.showsWeeklyUsage) }
+    }
     /// Só mostra a barra enquanto o Orca estiver aberto.
     @Published var onlyWithOrca: Bool {
         didSet { UserDefaults.standard.set(onlyWithOrca, forKey: Keys.onlyWithOrca) }
@@ -19,13 +23,17 @@ final class BarState: ObservableObject {
     @Published var notifyOnLimits: Bool {
         didSet { UserDefaults.standard.set(notifyOnLimits, forKey: Keys.notifyOnLimits) }
     }
-    var isDragging = false
+    @Published var isDragging = false
+    @Published var isPointerInsideBar = false
+    private(set) var hoveredID: String?
+    private var pinnedID: String?
 
     private var openWork: DispatchWorkItem?
     private var closeWork: DispatchWorkItem?
 
     enum Keys {
         static let docked = "barDocked"
+        static let showsWeeklyUsage = "showsWeeklyUsage"
         static let onlyWithOrca = "onlyWithOrca"
         static let onlyWhenActive = "onlyWhenActive"
         static let notifyOnLimits = "notifyOnLimits"
@@ -34,15 +42,18 @@ final class BarState: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         docked = defaults.object(forKey: Keys.docked) as? Bool ?? true
-        onlyWithOrca = defaults.object(forKey: Keys.onlyWithOrca) as? Bool ?? true
-        onlyWhenActive = defaults.object(forKey: Keys.onlyWhenActive) as? Bool ?? true
+        showsWeeklyUsage = defaults.object(forKey: Keys.showsWeeklyUsage) as? Bool ?? true
+        onlyWithOrca = defaults.object(forKey: Keys.onlyWithOrca) as? Bool ?? false
+        onlyWhenActive = defaults.object(forKey: Keys.onlyWhenActive) as? Bool ?? false
         notifyOnLimits = defaults.object(forKey: Keys.notifyOnLimits) as? Bool ?? true
     }
 
     func hoverItem(_ id: String, inside: Bool) {
         if inside {
+            hoveredID = id
             closeWork?.cancel()
             guard !isDragging else { return }
+            guard pinnedID == nil else { return }
             if openID == nil {
                 // Pequeno atraso para não piscar quando o mouse só passa por cima.
                 schedule(&openWork, after: 0.12) { [weak self] in self?.openID = id }
@@ -50,8 +61,20 @@ final class BarState: ObservableObject {
                 openID = id
             }
         } else {
+            if hoveredID == id { hoveredID = nil }
             openWork?.cancel()
             scheduleClose()
+        }
+    }
+
+    func togglePanel(_ id: String) {
+        openWork?.cancel()
+        closeWork?.cancel()
+        if pinnedID == id {
+            closeNow()
+        } else {
+            pinnedID = id
+            openID = id
         }
     }
 
@@ -63,10 +86,12 @@ final class BarState: ObservableObject {
     func closeNow() {
         openWork?.cancel()
         closeWork?.cancel()
+        pinnedID = nil
         openID = nil
     }
 
     private func scheduleClose() {
+        guard pinnedID == nil else { return }
         schedule(&closeWork, after: 0.35) { [weak self] in self?.openID = nil }
     }
 
