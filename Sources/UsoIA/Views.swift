@@ -20,32 +20,73 @@ enum Theme {
     }
 }
 
-/// A aba se une à borda com uma curva em S, em vez de um canto de retângulo.
+/// A aba se une à borda da tela com uma curva em S adaptada ao lado ancorado.
+/// Todos os lados utilizam a mesma curva canônica da borda direita através de transformação rígida,
+/// garantindo simetria e curvatura idênticas na direita, esquerda, topo e base.
 private struct SidebarShape: Shape {
+    let edge: DockEdge
+
     func path(in rect: CGRect) -> Path {
-        let cap = min(rect.width * 1.55, rect.height / 2)
-        let middle = rect.minX + rect.width * 0.60
+        if edge == .floating {
+            var path = Path()
+            path.addRoundedRect(in: rect, cornerSize: CGSize(width: 18, height: 18), style: .continuous)
+            return path
+        }
+
+        // Espessura T (perpendicular à borda da tela) e comprimento L (ao longo da borda da tela).
+        let T = edge.isHorizontal ? rect.height : rect.width
+        let L = edge.isHorizontal ? rect.width : rect.height
+
+        let cap = min(T * 1.30, L / 2)
+        let middle = T * 0.60
+
+        // Mapeia coordenadas do lado direito canônico (x in [0, T], y in [0, L]) para qualquer borda:
+        // x = T é a face plana colada na tela; x = 0 é a face interna arredondada.
+        // y = 0 é o início do comprimento; y = L é o final do comprimento.
+        func mapPoint(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            switch edge {
+            case .right:
+                return CGPoint(x: rect.minX + x, y: rect.minY + y)
+            case .left:
+                return CGPoint(x: rect.minX + (T - x), y: rect.minY + y)
+            case .top:
+                return CGPoint(x: rect.minX + y, y: rect.minY + (T - x))
+            case .bottom:
+                return CGPoint(x: rect.minX + y, y: rect.minY + x)
+            case .floating:
+                return .zero
+            }
+        }
+
         var path = Path()
-        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addCurve(to: CGPoint(x: middle, y: rect.minY + cap * 0.54),
-                      control1: CGPoint(x: rect.maxX, y: rect.minY + cap * 0.48),
-                      control2: CGPoint(x: rect.minX + rect.width * 0.90, y: rect.minY + cap * 0.54))
-        path.addCurve(to: CGPoint(x: rect.minX, y: rect.minY + cap),
-                      control1: CGPoint(x: rect.minX + rect.width * 0.16, y: rect.minY + cap * 0.54),
-                      control2: CGPoint(x: rect.minX, y: rect.minY + cap * 0.72))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - cap))
-        path.addCurve(to: CGPoint(x: middle, y: rect.maxY - cap * 0.54),
-                      control1: CGPoint(x: rect.minX, y: rect.maxY - cap * 0.72),
-                      control2: CGPoint(x: rect.minX + rect.width * 0.16, y: rect.maxY - cap * 0.54))
-        path.addCurve(to: CGPoint(x: rect.maxX, y: rect.maxY),
-                      control1: CGPoint(x: rect.minX + rect.width * 0.90, y: rect.maxY - cap * 0.54),
-                      control2: CGPoint(x: rect.maxX, y: rect.maxY - cap * 0.48))
+        path.move(to: mapPoint(T, 0))
+        path.addCurve(
+            to: mapPoint(middle, cap * 0.54),
+            control1: mapPoint(T, cap * 0.48),
+            control2: mapPoint(T * 0.90, cap * 0.54)
+        )
+        path.addCurve(
+            to: mapPoint(0, cap),
+            control1: mapPoint(T * 0.16, cap * 0.54),
+            control2: mapPoint(0, cap * 0.72)
+        )
+        path.addLine(to: mapPoint(0, L - cap))
+        path.addCurve(
+            to: mapPoint(middle, L - cap * 0.54),
+            control1: mapPoint(0, L - cap * 0.72),
+            control2: mapPoint(T * 0.16, L - cap * 0.54)
+        )
+        path.addCurve(
+            to: mapPoint(T, L),
+            control1: mapPoint(T * 0.90, L - cap * 0.54),
+            control2: mapPoint(T, L - cap * 0.48)
+        )
         path.closeSubpath()
         return path
     }
 }
 
-// MARK: - Barra vertical
+// MARK: - Barra vertical / horizontal
 
 struct BarView: View {
     @ObservedObject var store: UsageStore
@@ -53,25 +94,43 @@ struct BarView: View {
 
     var body: some View {
         let active = state.isPointerInsideBar || state.openID != nil || state.isDragging
-        VStack(spacing: 12) {
-            ForEach(store.providers) { provider in
-                RingItem(provider: provider, store: store, state: state)
+        let isHorizontal = state.dockEdge.isHorizontal
+
+        Group {
+            if isHorizontal {
+                HStack(spacing: 12) {
+                    ForEach(store.providers) { provider in
+                        RingItem(provider: provider, store: store, state: state)
+                    }
+                }
+                .padding(.leading, 46)
+                .padding(.trailing, 42)
+                .padding(.vertical, 2)
+                .frame(height: Theme.barWidth)
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(store.providers) { provider in
+                        RingItem(provider: provider, store: store, state: state)
+                    }
+                }
+                .padding(.top, 46)
+                .padding(.bottom, 42)
+                .frame(width: Theme.barWidth)
             }
         }
-        .padding(.top, 48)
-        .padding(.bottom, 60)
-        .frame(width: Theme.barWidth)
         .background {
             ZStack {
-                SidebarShape().fill(.ultraThinMaterial).opacity(active ? 1 : 0.55)
-                SidebarShape().fill(Theme.barFill).opacity(active ? 1 : 0.75)
+                SidebarShape(edge: state.dockEdge).fill(.ultraThinMaterial).opacity(active ? 1 : 0.35)
+                SidebarShape(edge: state.dockEdge).fill(Theme.barFill).opacity(active ? 1 : 0.40)
             }
         }
         .overlay(
-            SidebarShape()
-                .stroke(Color.white.opacity(active ? 0.08 : 0.04), lineWidth: 0.5)
+            SidebarShape(edge: state.dockEdge)
+                .stroke(Color.white.opacity(active ? 0.08 : 0.02), lineWidth: 0.5)
         )
-        .animation(.easeInOut(duration: 0.18), value: active)
+        .opacity(active ? 1.0 : 0.40)
+        .animation(.easeInOut(duration: 0.20), value: active)
+        .animation(.easeInOut(duration: 0.25), value: state.dockEdge)
         .onHover { state.isPointerInsideBar = $0 }
         .contextMenu { BarMenuItems(store: store, state: state) }
         .environment(\.colorScheme, .dark)
@@ -84,14 +143,14 @@ struct RingItem: View {
     @ObservedObject var state: BarState
 
     private var displayedWindow: UsageWindow? {
-        state.showsWeeklyUsage ? (provider.weeklyWindow ?? provider.main) : provider.main
+        state.showsWeeklyUsage ? (provider.weeklyWindow ?? provider.operationalWindow) : provider.operationalWindow
     }
 
     var body: some View {
         let pct = displayedWindow?.usedPercent
         let isOpen = state.openID == provider.id
 
-        VStack(spacing: 6) {
+        VStack(spacing: 2) {
             ZStack {
                 Circle()
                     .fill(Color.white.opacity(isOpen ? 0.065 : 0.015))
@@ -106,17 +165,17 @@ struct RingItem: View {
                         .rotationEffect(.degrees(-90))
                 }
 
-                ProviderIcon(id: provider.id, size: 18, color: .white.opacity(pct == nil ? 0.40 : 0.96))
+                ProviderIcon(id: provider.id, size: 17, color: .white.opacity(pct == nil ? 0.40 : 0.96))
             }
-            .frame(width: 40, height: 40)
+            .frame(width: 36, height: 36)
 
             Text(pct.map(Fmt.pct) ?? "—")
-                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .font(.system(size: 12, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(Color.white.opacity(pct == nil ? 0.40 : 0.98))
         }
-        .frame(width: Theme.barWidth - 8)
-        .padding(.vertical, 3)
+        .frame(width: Theme.barWidth - 10)
+        .padding(.vertical, 1)
         .background(
             RoundedRectangle(cornerRadius: 14)
                 .fill(Color.white.opacity(isOpen ? 0.035 : 0))
@@ -126,16 +185,29 @@ struct RingItem: View {
         .accessibilityLabel("\(provider.name), \(displayedWindow?.label ?? "uso"), \(pct.map(Fmt.pct) ?? "sem dados")")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { state.togglePanel(provider.id) }
-        .onHover { state.hoverItem(provider.id, inside: $0) }
+        .onHover { inside in
+            state.hoverItem(provider.id, inside: inside)
+            if inside { store.refreshIfStale(maxAge: 30) }
+        }
         .popover(
             isPresented: Binding(
                 get: { state.openID == provider.id },
                 set: { shown in if !shown, state.openID == provider.id { state.closeNow() } }),
-            arrowEdge: .leading
+            arrowEdge: popoverArrowEdge
         ) {
             DetailView(provider: provider, store: store, preferredWindowID: displayedWindow?.id)
                 .onHover { state.hoverPanel(inside: $0) }
                 .environment(\.colorScheme, .dark)
+        }
+    }
+
+    private var popoverArrowEdge: Edge {
+        switch state.dockEdge {
+        case .right: return .leading
+        case .left: return .trailing
+        case .top: return .bottom
+        case .bottom: return .top
+        case .floating: return .leading
         }
     }
 }
@@ -200,13 +272,43 @@ struct BarMenuItems: View {
     @ObservedObject var state: BarState
 
     var body: some View {
-        Button(store.isLoading ? "Atualizando…" : "Atualizar agora") { store.refresh() }
+        Button(store.isLoading ? "Atualizando…" : "Atualizar agora") { store.refresh(forceActivity: true) }
             .disabled(store.isLoading)
         if let updated = store.lastUpdated {
             Text("Atualizado \(Fmt.ago(updated, now: Date()))")
         }
         Divider()
-        Toggle("Mostrar consumo semanal", isOn: $state.showsWeeklyUsage)
+        Menu("Intervalo de atualização") {
+            Button("30 segundos" + (Int(store.refreshInterval) == 30 ? " ✓" : "")) {
+                store.refreshInterval = 30
+            }
+            Button("1 minuto (padrão)" + (Int(store.refreshInterval) == 60 ? " ✓" : "")) {
+                store.refreshInterval = 60
+            }
+            Button("2 minutos" + (Int(store.refreshInterval) == 120 ? " ✓" : "")) {
+                store.refreshInterval = 120
+            }
+            Button("5 minutos" + (Int(store.refreshInterval) == 300 ? " ✓" : "")) {
+                store.refreshInterval = 300
+            }
+        }
+        Divider()
+        Menu("Posição na tela") {
+            Button("Lado direito" + (state.dockEdge == .right ? " ✓" : "")) {
+                state.dockEdge = .right
+            }
+            Button("Lado esquerdo" + (state.dockEdge == .left ? " ✓" : "")) {
+                state.dockEdge = .left
+            }
+            Button("Topo (cima)" + (state.dockEdge == .top ? " ✓" : "")) {
+                state.dockEdge = .top
+            }
+            Button("Base (baixo)" + (state.dockEdge == .bottom ? " ✓" : "")) {
+                state.dockEdge = .bottom
+            }
+        }
+        Divider()
+        Toggle("Mostrar consumo semanal no Claude", isOn: $state.showsWeeklyUsage)
         Divider()
         Toggle("Mostrar só com o Orca aberto", isOn: $state.onlyWithOrca)
         Toggle("Ocultar ao sair do Orca", isOn: $state.onlyWhenActive)
@@ -334,7 +436,7 @@ struct DetailView: View {
                         Text("Aguardando atualização")
                     }
                     Spacer(minLength: 4)
-                    Button { store.refresh() } label: {
+                    Button { store.refresh(forceActivity: true) } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 11, weight: .medium))
                             .frame(width: 22, height: 20)
@@ -347,7 +449,7 @@ struct DetailView: View {
                 }
                 .font(.system(size: 10))
                 .foregroundStyle(.white.opacity(0.50))
-                .help(store.lastError ?? "Atualização automática a cada 5 minutos")
+                .help(store.lastError ?? "Atualização automática a cada \(Int(store.refreshInterval))s")
             }
             .padding(14)
             .frame(width: 300)
@@ -451,12 +553,16 @@ struct TokenActivityView: View {
     }
 }
 
+final class ProjectRowState: ObservableObject {
+    @Published var isCopied = false
+    @Published var isHovered = false
+}
+
 struct ProjectRow: View {
     let project: RecentProject
     let brandColor: Color
     let now: Date
-    @State private var isCopied = false
-    @State private var isHovered = false
+    @StateObject private var rowState = ProjectRowState()
 
     var resumeId: String {
         project.sessionId ?? project.id
@@ -479,11 +585,11 @@ struct ProjectRow: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(resumeId, forType: .string)
         withAnimation(.easeInOut(duration: 0.15)) {
-            isCopied = true
+            rowState.isCopied = true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
             withAnimation(.easeInOut(duration: 0.2)) {
-                isCopied = false
+                self.rowState.isCopied = false
             }
         }
     }
@@ -492,11 +598,11 @@ struct ProjectRow: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(resumeCommand, forType: .string)
         withAnimation(.easeInOut(duration: 0.15)) {
-            isCopied = true
+            rowState.isCopied = true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
             withAnimation(.easeInOut(duration: 0.2)) {
-                isCopied = false
+                self.rowState.isCopied = false
             }
         }
     }
@@ -508,9 +614,9 @@ struct ProjectRow: View {
     var body: some View {
         Button(action: copyResumeId) {
             HStack(alignment: .top, spacing: 7) {
-                Image(systemName: isCopied ? "checkmark.circle.fill" : "folder.fill")
+                Image(systemName: rowState.isCopied ? "checkmark.circle.fill" : "folder.fill")
                     .font(.system(size: 10))
-                    .foregroundStyle(isCopied ? Color(red: 0.20, green: 0.85, blue: 0.45) : brandColor.opacity(0.85))
+                    .foregroundStyle(rowState.isCopied ? Color(red: 0.20, green: 0.85, blue: 0.45) : brandColor.opacity(0.85))
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: 1.5) {
@@ -540,11 +646,11 @@ struct ProjectRow: View {
 
                 Spacer(minLength: 6)
 
-                if isCopied {
+                if rowState.isCopied {
                     Text("Copiado!")
                         .font(.system(size: 9.5, weight: .bold))
                         .foregroundStyle(Color(red: 0.20, green: 0.85, blue: 0.45))
-                } else if isHovered {
+                } else if rowState.isHovered {
                     Button(action: resumeDirectly) {
                         Image(systemName: "terminal.fill")
                             .font(.system(size: 9.5))
@@ -564,12 +670,12 @@ struct ProjectRow: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isCopied ? Color.white.opacity(0.12) : (isHovered ? Color.white.opacity(0.06) : Color.clear))
+                    .fill(rowState.isCopied ? Color.white.opacity(0.12) : (rowState.isHovered ? Color.white.opacity(0.06) : Color.clear))
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
+        .onHover { rowState.isHovered = $0 }
         .help("Clique para copiar o Resume ID (\(resumeId))")
         .contextMenu {
             Button("Retomar no Terminal (\(resumeCommand))") {

@@ -6,6 +6,7 @@ struct UsageTests {
     static func main() throws {
         let tests = UsageTests()
         try tests.testCodexWithOnlyWeeklyQuota()
+        try tests.testClaudeSessionAndCodexWeeklyDifferentiation()
         try tests.testResetExpiryUsesUnusedCredits()
         try tests.testUnknownExpiryDoesNotDiscardResetCount()
         tests.testModelQuotaIsNotMislabelledAsWeekly()
@@ -14,7 +15,10 @@ struct UsageTests {
         try tests.testMoveWithoutOrcaClearsOldAnchor()
         tests.testFloatingPositionOutsideOrcaIsPreserved()
         tests.testChangedBarSizePreservesTopEdge()
-        print("9 verificações de cotas, resets, histórico e posição passaram.")
+        tests.testDockingLeftEdgeAdaptsPosition()
+        tests.testDockingTopAndBottomEdgesAdaptPosition()
+        try tests.testEdgePersistenceSurvivesReload()
+        print("13 verificações de cotas, resets, histórico e posição passaram.")
     }
 
     func testCodexWithOnlyWeeklyQuota() throws {
@@ -22,7 +26,18 @@ struct UsageTests {
         let provider = try requireValue(UsageFetcher.decode(data).first)
         expectEqual(provider.weeklyWindow?.usedPercent, 19)
         expectEqual(provider.weeklyWindow?.label, "Limite semanal")
+        expectEqual(provider.operationalWindow?.usedPercent, 19)
         expectEqual(provider.plan, "Prolite")
+    }
+
+    func testClaudeSessionAndCodexWeeklyDifferentiation() throws {
+        let data = Data(#"[{"provider":"claude","usage":{"loginMethod":"Pro","primary":{"windowMinutes":300,"usedPercent":6},"secondary":{"windowMinutes":10080,"usedPercent":47}},"rateWindowLabels":{"primary":"Session","secondary":"Weekly"}}]"#.utf8)
+        let provider = try requireValue(UsageFetcher.decode(data).first)
+        expectEqual(provider.sessionWindow?.usedPercent, 6)
+        expectEqual(provider.weeklyWindow?.usedPercent, 47)
+        expectEqual(provider.operationalWindow?.usedPercent, 6)
+        expectEqual(provider.sessionWindow?.label, "Sessão (5 horas)")
+        expectEqual(provider.weeklyWindow?.label, "Semanal (todos os modelos)")
     }
 
     func testResetExpiryUsesUnusedCredits() throws {
@@ -108,6 +123,57 @@ struct UsageTests {
             visibleFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080), orcaFrame: nil)
         expectEqual(result.minX, 500)
         expectEqual(result.maxY, 788)
+    }
+
+    func testDockingLeftEdgeAdaptsPosition() {
+        let frame = CGRect(x: 15, y: 300, width: 54, height: 256)
+        let saved = BarPlacement(frame: frame, docked: true, edge: .left, orcaFrame: nil, screenID: 1)
+        let result = saved.restoredFrame(
+            size: frame.size,
+            visibleFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            orcaFrame: nil)
+        expectEqual(result.minX, 0)
+        expectEqual(result.maxY, 556)
+        expectEqual(result.width, 54)
+        expectEqual(result.height, 256)
+    }
+
+    func testDockingTopAndBottomEdgesAdaptPosition() {
+        let size = CGSize(width: 256, height: 54)
+        // Borda superior (topo)
+        let topFrame = CGRect(x: 400, y: 1026, width: 256, height: 54)
+        let topSaved = BarPlacement(frame: topFrame, docked: true, edge: .top, orcaFrame: nil, screenID: 1)
+        let topResult = topSaved.restoredFrame(
+            size: size,
+            visibleFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            orcaFrame: nil)
+        expectEqual(topResult.maxY, 1080)
+        expectEqual(topResult.minX, 400)
+
+        // Borda inferior (base)
+        let bottomFrame = CGRect(x: 400, y: 5, width: 256, height: 54)
+        let bottomSaved = BarPlacement(frame: bottomFrame, docked: true, edge: .bottom, orcaFrame: nil, screenID: 1)
+        let bottomResult = bottomSaved.restoredFrame(
+            size: size,
+            visibleFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            orcaFrame: nil)
+        expectEqual(bottomResult.minY, 0)
+        expectEqual(bottomResult.minX, 400)
+    }
+
+    func testEdgePersistenceSurvivesReload() throws {
+        let suite = "local.usoia.tests.\(UUID().uuidString)"
+        let defaults = try requireValue(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        for edge in [DockEdge.left, .right, .top, .bottom] {
+            let frame = CGRect(x: 200, y: 200, width: 54, height: 256)
+            let saved = BarPlacement(frame: frame, docked: true, edge: edge, orcaFrame: nil, screenID: 1)
+            saved.save(to: defaults)
+            let reloaded = try requireValue(BarPlacement.load(from: defaults))
+            expectEqual(reloaded.edge, edge)
+            expectEqual(reloaded.docked, true)
+        }
     }
 }
 

@@ -62,23 +62,45 @@ O gráfico representa tokens registrados localmente nos últimos 30 dias. Ele ap
 
 ## Verificação
 
+macOS:
 ```bash
 ./test.sh
 ./build.sh
+```
+
+Windows:
+```cmd
+python windows/test_windows.py
 ```
 
 As verificações de cotas, resets, agregação diária e restauração da posição funcionam com Xcode Command Line Tools, sem exigir o Xcode completo.
 
 ---
 
+## 🪟 Versão Windows
+
+O Code_Bar possui uma versão dedicada para **Windows 10 e 11** com as mesmas funcionalidades, atração magnética em 4 bordas, contorno canônico em S e leitura de projetos recentes:
+
+- **Pasta:** `windows/`
+- **Inicializador:** Dê dois cliques em `windows/run.bat`
+- **Manual:**
+  ```cmd
+  pip install -r windows/requirements.txt
+  python windows/code_bar.py
+  ```
+Consulte o [README do Windows](windows/README.md) para mais detalhes.
+
+---
+
 ## 🛠️ Tecnologias
 
-- **Swift** & **SwiftUI**
-- **AppKit** (NSPanel, NSWorkspace, ServiceManagement)
-- **Swift Package Manager (SPM)**
+- **macOS:** Swift 5.10+, SwiftUI, AppKit
+- **Windows:** Python 3.10+, PySide6 (Qt)
+- **Design:** Curvas paramétricas cúbicas em S, encaixe magnético em 4 bordas
 
 ---
 
 ## 📄 Licença
 
 Distribuído sob a licença MIT.
+

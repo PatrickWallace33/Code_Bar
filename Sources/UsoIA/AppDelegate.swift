@@ -50,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var forceVisible = false
 
     private let orcaBundleID = "com.stablyai.orca"
-    private let snapDistance: CGFloat = 24
+    private let snapDistance: CGFloat = 36
     private var lastOrcaFrame: NSRect?
     private var placement = BarPlacement.load()
     private var isPositioningPanel = false
@@ -61,7 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if let placement { state.docked = placement.docked }
+        if let placement {
+            state.docked = placement.docked
+            if let edge = placement.edge {
+                state.dockEdge = edge
+            }
+        }
         hosting = BarHostingView(rootView: BarView(store: store, state: state))
         hosting.sizingOptions = [.intrinsicContentSize]
         panel = BarPanel(
@@ -142,6 +147,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.layoutPanel() }
+            .store(in: &cancellables)
+
+        state.$dockEdge
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] edge in self?.repositionToEdge(edge) }
             .store(in: &cancellables)
 
         store.start()
@@ -275,15 +286,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    private func detectEdge(frame: NSRect, target: NSRect) -> DockEdge {
+        let distRight: CGFloat = frame.maxX >= target.maxX ? 0 : (target.maxX - frame.maxX)
+        let distLeft: CGFloat = frame.minX <= target.minX ? 0 : (frame.minX - target.minX)
+        let distTop: CGFloat = frame.maxY >= target.maxY ? 0 : (target.maxY - frame.maxY)
+        let distBottom: CGFloat = frame.minY <= target.minY ? 0 : (frame.minY - target.minY)
+
+        let candidates: [(edge: DockEdge, dist: CGFloat)] = [
+            (.right, distRight),
+            (.left, distLeft),
+            (.top, distTop),
+            (.bottom, distBottom),
+        ]
+
+        let minDistance = candidates.map(\.dist).min() ?? CGFloat.infinity
+        guard minDistance < snapDistance else {
+            return .floating
+        }
+
+        // Se houver empate próximo (ex: canto da tela), preserva a orientação atual
+        let bestCandidates = candidates.filter { abs($0.dist - minDistance) < 4 }
+        if bestCandidates.count > 1 {
+            if let sameEdge = bestCandidates.first(where: { $0.edge == state.dockEdge }) {
+                return sameEdge.edge
+            }
+            if let sameOrientation = bestCandidates.first(where: { $0.edge.isHorizontal == state.dockEdge.isHorizontal }) {
+                return sameOrientation.edge
+            }
+        }
+        return candidates.min(by: { $0.dist < $1.dist })?.edge ?? .floating
+    }
+
     private func recordPlacement() {
         guard let screen = screen(containing: panel.frame) ?? panel.screen ?? NSScreen.main else { return }
         let orca = (state.onlyWithOrca ? currentOrcaWindowFrame() : nil)
             .flatMap { $0.intersects(panel.frame) ? $0 : nil }
         let targetBounds = orca ?? screen.visibleFrame
-        let docked = abs(targetBounds.maxX - panel.frame.maxX) < snapDistance
+        let edge = state.isDragging ? detectEdge(frame: panel.frame, target: targetBounds) : state.dockEdge
         let saved = BarPlacement(
-            frame: panel.frame, docked: docked, orcaFrame: orca,
-            screenID: (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value)
+            frame: panel.frame,
+            docked: edge.isDocked,
+            edge: edge,
+            orcaFrame: orca,
+            screenID: (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        )
         placement = saved
         saved.save()
     }
@@ -298,15 +344,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let orca = (state.onlyWithOrca ? currentOrcaWindowFrame() : nil)
             .flatMap { $0.intersects(panel.frame) ? $0 : nil }
         let targetBounds = orca ?? screen.visibleFrame
-        let docked = abs(targetBounds.maxX - panel.frame.maxX) < snapDistance
-        let saved = BarPlacement(frame: panel.frame, docked: docked, orcaFrame: orca, screenID: nil)
-        let frame = saved.restoredFrame(size: panel.frame.size, visibleFrame: screen.visibleFrame, orcaFrame: orca)
-        isPositioningPanel = true
-        panel.setFrame(frame, display: true)
-        isPositioningPanel = false
-        recordPlacement()
-        state.docked = placement?.docked ?? docked
-        state.isDragging = false
+        let newEdge = detectEdge(frame: panel.frame, target: targetBounds)
+        let orientationChanged = newEdge.isHorizontal != state.dockEdge.isHorizontal
+
+        state.dockEdge = newEdge
+        state.docked = newEdge.isDocked
+
+        let saved = BarPlacement(
+            frame: panel.frame,
+            docked: newEdge.isDocked,
+            edge: newEdge,
+            orcaFrame: orca,
+            screenID: (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        )
+        placement = saved
+        saved.save()
+
+        if orientationChanged {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let size = self.hosting.fittingSize
+                let frame = saved.restoredFrame(size: size, visibleFrame: screen.visibleFrame, orcaFrame: orca)
+                self.isPositioningPanel = true
+                self.panel.setFrame(frame, display: true)
+                self.isPositioningPanel = false
+                self.recordPlacement()
+                self.state.isDragging = false
+            }
+        } else {
+            let frame = saved.restoredFrame(size: panel.frame.size, visibleFrame: screen.visibleFrame, orcaFrame: orca)
+            isPositioningPanel = true
+            panel.setFrame(frame, display: true)
+            isPositioningPanel = false
+            recordPlacement()
+            state.isDragging = false
+        }
+    }
+
+    private func repositionToEdge(_ edge: DockEdge) {
+        guard !state.isDragging, !isPositioningPanel else { return }
+        guard let screen = screen(containing: panel.frame) ?? panel.screen ?? NSScreen.main else { return }
+        let orca = (state.onlyWithOrca ? currentOrcaWindowFrame() : nil)
+            .flatMap { $0.intersects(panel.frame) ? $0 : nil }
+        let target = orca ?? screen.visibleFrame
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.state.isDragging else { return }
+            let size = self.hosting.fittingSize
+            guard size.width > 0, size.height > 0 else { return }
+
+            var newX = self.panel.frame.minX
+            var newTop = self.panel.frame.maxY
+
+            switch edge {
+            case .right:
+                newX = target.maxX - size.width
+                if newTop < target.minY + size.height || newTop > target.maxY {
+                    newTop = target.midY + size.height / 2
+                }
+            case .left:
+                newX = target.minX
+                if newTop < target.minY + size.height || newTop > target.maxY {
+                    newTop = target.midY + size.height / 2
+                }
+            case .top:
+                newTop = target.maxY
+                if newX < target.minX || newX > target.maxX - size.width {
+                    newX = target.midX - size.width / 2
+                }
+            case .bottom:
+                newTop = target.minY + size.height
+                if newX < target.minX || newX > target.maxX - size.width {
+                    newX = target.midX - size.width / 2
+                }
+            case .floating:
+                break
+            }
+
+            let newFrame = CGRect(x: newX, y: newTop - size.height, width: size.width, height: size.height)
+            let saved = BarPlacement(
+                frame: newFrame,
+                docked: edge.isDocked,
+                edge: edge,
+                orcaFrame: orca,
+                screenID: (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            )
+            self.placement = saved
+            saved.save()
+
+            let restored = saved.restoredFrame(size: size, visibleFrame: screen.visibleFrame, orcaFrame: orca)
+            self.isPositioningPanel = true
+            self.panel.setFrame(restored, display: true)
+            self.isPositioningPanel = false
+        }
     }
 
     /// Restaura a última posição; o local padrão só é usado antes do primeiro arraste.
@@ -329,10 +459,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 ?? panel.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
 
         let bounds = anchor ?? screen.visibleFrame
+        let initialEdge = placement?.edge ?? state.dockEdge
         let initial = BarPlacement(
             frame: NSRect(x: bounds.maxX - size.width, y: bounds.midY - size.height / 2,
                           width: size.width, height: size.height),
-            docked: state.docked, orcaFrame: anchor, screenID: nil)
+            docked: initialEdge.isDocked,
+            edge: initialEdge,
+            orcaFrame: anchor,
+            screenID: nil)
         let frame = (placement ?? initial).restoredFrame(
             size: size, visibleFrame: screen.visibleFrame, orcaFrame: anchor)
         isPositioningPanel = true

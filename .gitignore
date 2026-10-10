@@ -26,3 +26,15 @@ xcuserdata/
 *.key
 *.p8
 *.p12
+
+# Python & Windows
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+ENV/
+*.spec
+settings.json
+

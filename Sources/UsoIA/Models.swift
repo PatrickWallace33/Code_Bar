@@ -167,6 +167,21 @@ struct ProviderUsage: Identifiable {
     /// Janela principal retrocompatível.
     var main: UsageWindow? { sessionWindow ?? windows.first }
 
+    /// Janela operacional recomendada para o mostrador principal (anel):
+    /// - Claude: guiado pela cota diária por sessão (janela rotativa de 5h).
+    /// - Codex: guiado pela cota semanal (janela de 7 dias).
+    /// - Antigravity e outros: janela principal de sessão.
+    var operationalWindow: UsageWindow? {
+        switch id {
+        case "claude":
+            return sessionWindow ?? main
+        case "codex":
+            return weeklyWindow ?? main
+        default:
+            return main
+        }
+    }
+
     /// Janela mais apertada entre as outras (anel interno).
     var tightestOther: UsageWindow? {
         windows.dropFirst().max(by: { $0.usedPercent < $1.usedPercent })
@@ -178,6 +193,21 @@ struct ProviderUsage: Identifiable {
     }
 
     var depletionMessage: String? {
+        if id == "claude" {
+            if let s = sessionWindow, s.usedPercent >= 99 {
+                if let reset = Fmt.reset(s, now: Date()) {
+                    return "Cota da sessão esgotada (\(reset))"
+                }
+                return "Cota da sessão esgotada"
+            }
+            if let w = weeklyWindow, w.usedPercent >= 99 {
+                if let reset = Fmt.reset(w, now: Date()) {
+                    return "Cota semanal esgotada (\(reset))"
+                }
+                return "Cota semanal esgotada"
+            }
+            return nil
+        }
         if let w = weeklyWindow, w.usedPercent >= 99 {
             if let reset = Fmt.reset(w, now: Date()) {
                 return "Cota semanal esgotada (\(reset))"
@@ -306,11 +336,17 @@ enum Names {
     }
 
     static func label(_ raw: String, provider: String, slot: String) -> String {
-        if raw.lowercased() == "weekly" { return "Limite semanal" }
-        if provider == "claude", slot == "secondary", raw.lowercased().contains("week") {
-            return "Todos os modelos"
+        if raw.lowercased() == "weekly" {
+            if provider == "claude" { return "Semanal (todos os modelos)" }
+            return "Limite semanal"
         }
-        if raw == "Session" { return "Sessão atual" }
+        if provider == "claude", slot == "secondary", raw.lowercased().contains("week") {
+            return "Semanal (todos os modelos)"
+        }
+        if raw == "Session" {
+            if provider == "claude" { return "Sessão (5 horas)" }
+            return "Sessão atual"
+        }
         var s = raw
         let pairs = [
             ("5-hour", "5 horas"), ("Weekly", "Semanal"), ("weekly", "semanal"),

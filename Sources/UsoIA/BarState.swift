@@ -5,8 +5,15 @@ import Foundation
 final class BarState: ObservableObject {
     /// Provedor cujo painel está aberto (abre ao passar o mouse).
     @Published var openID: String?
-    /// Colada na borda direita da tela (cantos arredondados só do lado esquerdo).
+    /// Colada na borda da tela.
     @Published var docked: Bool
+    /// Borda da tela onde a barra está ancorada (direita, esquerda, topo, base ou flutuante).
+    @Published var dockEdge: DockEdge {
+        didSet {
+            UserDefaults.standard.set(dockEdge.rawValue, forKey: Keys.dockEdge)
+            docked = dockEdge.isDocked
+        }
+    }
     /// A foto de referência destaca o limite semanal abaixo de cada anel.
     @Published var showsWeeklyUsage: Bool {
         didSet { UserDefaults.standard.set(showsWeeklyUsage, forKey: Keys.showsWeeklyUsage) }
@@ -33,6 +40,7 @@ final class BarState: ObservableObject {
 
     enum Keys {
         static let docked = "barDocked"
+        static let dockEdge = "barEdge"
         static let showsWeeklyUsage = "showsWeeklyUsage"
         static let onlyWithOrca = "onlyWithOrca"
         static let onlyWhenActive = "onlyWhenActive"
@@ -42,7 +50,12 @@ final class BarState: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         docked = defaults.object(forKey: Keys.docked) as? Bool ?? true
-        showsWeeklyUsage = defaults.object(forKey: Keys.showsWeeklyUsage) as? Bool ?? true
+        if let rawEdge = defaults.string(forKey: Keys.dockEdge), let edge = DockEdge(rawValue: rawEdge) {
+            dockEdge = edge
+        } else {
+            dockEdge = (defaults.object(forKey: Keys.docked) as? Bool ?? true) ? .right : .floating
+        }
+        showsWeeklyUsage = defaults.object(forKey: Keys.showsWeeklyUsage) as? Bool ?? false
         onlyWithOrca = defaults.object(forKey: Keys.onlyWithOrca) as? Bool ?? false
         onlyWhenActive = defaults.object(forKey: Keys.onlyWhenActive) as? Bool ?? false
         notifyOnLimits = defaults.object(forKey: Keys.notifyOnLimits) as? Bool ?? true
